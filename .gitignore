@@ -1,0 +1,9 @@
+# Ignore pnpm cache
+.pnpm-store/
+
+# Ignore common dependency folders (if you are using npm/node.js)
+node_modules/
+
+# Ignore operating system specific files (like Windows files)
+Thumbs.db
+.DS_Store
