@@ -1,6 +1,6 @@
 # ======================================================
-# 🌿 DAILY WELLNESS VOICE COMPANION
-# 🚀 Context-Aware Agents & JSON Persistence
+# 💼 DAY 5: AI SALES DEVELOPMENT REP (SDR)
+# 🚀 Features: FAQ Retrieval, Lead Qualification, JSON Database
 # ======================================================
 
 import logging
@@ -8,13 +8,14 @@ import json
 import os
 import asyncio
 from datetime import datetime
-from typing import Annotated, Literal, List, Optional
-from dataclasses import dataclass, field, asdict
+from typing import Annotated, Literal, Optional, List
+from dataclasses import dataclass, asdict
 
-print("\n" + "🌿" * 50)
-print("🚀 WELLNESS COMPANION ")
+print("\n" + "💼" * 50)
+print("🚀 AI SDR AGENT - DAY 5 TUTORIAL")
+print("📚 SELLING: Dr. Abhishek's Cloud & AI Courses")
 print("💡 agent.py LOADED SUCCESSFULLY!")
-print("🌿" * 50 + "\n")
+print("💼" * 50 + "\n")
 
 from dotenv import load_dotenv
 from pydantic import Field
@@ -26,12 +27,11 @@ from livekit.agents import (
     RoomInputOptions,
     WorkerOptions,
     cli,
-    metrics,
-    MetricsCollectedEvent,
-    RunContext,
     function_tool,
+    RunContext,
 )
 
+# 🔌 PLUGINS
 from livekit.plugins import murf, silero, google, deepgram, noise_cancellation
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
@@ -39,177 +39,170 @@ logger = logging.getLogger("agent")
 load_dotenv(".env.local")
 
 # ======================================================
-# 🧠 STATE MANAGEMENT & DATA STRUCTURES
+# 📂 1. KNOWLEDGE BASE (FAQ)
+# ======================================================
+
+FAQ_FILE = "store_faq.json"
+LEADS_FILE = "leads_db.json"
+
+# Default FAQ data for "Dr. Abhishek Store"
+DEFAULT_FAQ = [
+    {
+        "question": "What do you sell?",
+        "answer": "We offer premium courses on Cloud Computing, Google Cloud Arcade, and Voice AI Agent development. We also sell 'Cloud Ninja' merchandise like hoodies and mugs."
+    },
+    {
+        "question": "How much does the Voice AI course cost?",
+        "answer": "The 'Professional Voice AI' course is currently priced at $499. It covers LiveKit, Deepgram, and LLM integration."
+    },
+    {
+        "question": "Do you offer free content?",
+        "answer": "Yes! Dr. Abhishek releases weekly tutorials on YouTube for free. The paid courses offer deep-dives, code reviews, and certification."
+    },
+    {
+        "question": "Do you do corporate consulting?",
+        "answer": "Absolutely. We help companies build internal voice agents for customer support. Pricing depends on the project scope."
+    }
+]
+
+def load_knowledge_base():
+    """Generates FAQ file if missing, then loads it."""
+    try:
+        path = os.path.join(os.path.dirname(__file__), FAQ_FILE)
+        if not os.path.exists(path):
+            with open(path, "w", encoding='utf-8') as f:
+                json.dump(DEFAULT_FAQ, f, indent=4)
+        with open(path, "r", encoding='utf-8') as f:
+            return json.dumps(json.load(f)) # Return as string for the Prompt
+    except Exception as e:
+        print(f"⚠️ Error loading FAQ: {e}")
+        return ""
+
+STORE_FAQ_TEXT = load_knowledge_base()
+
+# ======================================================
+# 💾 2. LEAD DATA STRUCTURE
 # ======================================================
 
 @dataclass
-class CheckInState:
-    """🌿 Holds data for the CURRENT daily check-in"""
-    mood: str | None = None
-    energy: str | None = None
-    objectives: list[str] = field(default_factory=list)
-    advice_given: str | None = None
-    
-    def is_complete(self) -> bool:
-        """✅ Check if we have the core check-in data"""
-        return all([
-            self.mood is not None,
-            self.energy is not None,
-            len(self.objectives) > 0
-        ])
-    
-    def to_dict(self) -> dict:
-        return asdict(self)
+class LeadProfile:
+    name: str | None = None
+    company: str | None = None
+    email: str | None = None
+    role: str | None = None
+    use_case: str | None = None
+    team_size: str | None = None
+    timeline: str | None = None
+   
+    def is_qualified(self):
+        """Returns True if we have the minimum info (Name + Email + Use Case)"""
+        return all([self.name, self.email, self.use_case])
 
 @dataclass
 class Userdata:
-    """👤 User session data passed to the agent"""
-    current_checkin: CheckInState
-    history_summary: str  # String containing info about previous sessions
-    session_start: datetime = field(default_factory=datetime.now)
+    lead_profile: LeadProfile
 
 # ======================================================
-# 💾 PERSISTENCE LAYERS (JSON LOGGING)
-# ======================================================
-WELLNESS_LOG_FILE = "wellness_log.json"
-
-def get_log_path():
-    base_dir = os.path.dirname(__file__)
-    backend_dir = os.path.abspath(os.path.join(base_dir, ".."))
-    return os.path.join(backend_dir, WELLNESS_LOG_FILE)
-
-def load_history() -> list:
-    """📖 Read previous check-ins from JSON"""
-    path = get_log_path()
-    if not os.path.exists(path):
-        return []
-    try:
-        with open(path, "r", encoding='utf-8') as f:
-            data = json.load(f)
-            return data if isinstance(data, list) else []
-    except Exception as e:
-        print(f"⚠️ Could not load history: {e}")
-        return []
-
-def save_checkin_entry(entry: CheckInState) -> None:
-    """💾 Append new check-in to the JSON list"""
-    path = get_log_path()
-    history = load_history()
-    
-    # Create record
-    record = {
-        "timestamp": datetime.now().isoformat(),
-        "mood": entry.mood,
-        "energy": entry.energy,
-        "objectives": entry.objectives,
-        "summary": entry.advice_given
-    }
-    
-    history.append(record)
-    
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding='utf-8') as f:
-        json.dump(history, f, indent=4, ensure_ascii=False)
-        
-    print(f"\n✅ CHECK-IN SAVED TO {path}")
-
-# ======================================================
-# 🛠️ WELLNESS AGENT TOOLS
+# 🛠️ 3. SDR TOOLS
 # ======================================================
 
 @function_tool
-async def record_mood_and_energy(
+async def update_lead_profile(
     ctx: RunContext[Userdata],
-    mood: Annotated[str, Field(description="The user's emotional state (e.g., happy, stressed, anxious)")],
-    energy: Annotated[str, Field(description="The user's energy level (e.g., high, low, drained, energetic)")],
+    name: Annotated[Optional[str], Field(description="Customer's name")] = None,
+    company: Annotated[Optional[str], Field(description="Customer's company name")] = None,
+    email: Annotated[Optional[str], Field(description="Customer's email address")] = None,
+    role: Annotated[Optional[str], Field(description="Customer's job title")] = None,
+    use_case: Annotated[Optional[str], Field(description="What they want to build or learn")] = None,
+    team_size: Annotated[Optional[str], Field(description="Number of people in their team")] = None,
+    timeline: Annotated[Optional[str], Field(description="When they want to start (e.g., Now, next month)")] = None,
 ) -> str:
-    """📝 Record how the user is feeling. Call this after the user describes their state."""
-    ctx.userdata.current_checkin.mood = mood
-    ctx.userdata.current_checkin.energy = energy
-    
-    print(f"📊 MOOD LOGGED: {mood} | ENERGY: {energy}")
-    
-    return f"I've noted that you are feeling {mood} with {energy} energy. I'm listening."
-
-@function_tool
-async def record_objectives(
-    ctx: RunContext[Userdata],
-    objectives: Annotated[list[str], Field(description="List of 1-3 specific goals the user wants to achieve today")],
-) -> str:
-    """🎯 Record the user's daily goals. Call this when user states what they want to do."""
-    ctx.userdata.current_checkin.objectives = objectives
-    print(f"🎯 OBJECTIVES LOGGED: {objectives}")
-    return "I've written down your goals for the day."
-
-@function_tool
-async def complete_checkin(
-    ctx: RunContext[Userdata],
-    final_advice_summary: Annotated[str, Field(description="A brief 1-sentence summary of the advice given")],
-) -> str:
-    """💾 Finalize the session, provide a recap, and save to JSON. Call at the very end."""
-    state = ctx.userdata.current_checkin
-    state.advice_given = final_advice_summary
-    
-    if not state.is_complete():
-        return "I can't finish yet. I still need to know your mood, energy, or at least one goal."
-
-    # Save to JSON
-    save_checkin_entry(state)
-    
-    print("\n" + "⭐" * 60)
-    print("🎉 WELLNESS CHECK-IN COMPLETED!")
-    print(f"💭 Mood: {state.mood}")
-    print(f"🎯 Goals: {state.objectives}")
-    print("⭐" * 60 + "\n")
-
-    recap = f"""
-    Here is your recap for today:
-    You are feeling {state.mood} and your energy is {state.energy}.
-    Your main goals are: {', '.join(state.objectives)}.
-    
-    Remember: {final_advice_summary}
-    
-    I've saved this in your wellness log. Have a wonderful day!
     """
-    return recap
+    ✍️ Captures lead details provided by the user during conversation.
+    Only call this when the user explicitly provides information.
+    """
+    profile = ctx.userdata.lead_profile
+   
+    # Update only fields that are provided (not None)
+    if name: profile.name = name
+    if company: profile.company = company
+    if email: profile.email = email
+    if role: profile.role = role
+    if use_case: profile.use_case = use_case
+    if team_size: profile.team_size = team_size
+    if timeline: profile.timeline = timeline
+   
+    print(f"📝 UPDATING LEAD: {profile}")
+    return "Lead profile updated. Continue the conversation."
+
+@function_tool
+async def submit_lead_and_end(
+    ctx: RunContext[Userdata],
+) -> str:
+    """
+    💾 Saves the lead to the database and signals the end of the call.
+    Call this when the user says goodbye or 'that's all'.
+    """
+    profile = ctx.userdata.lead_profile
+   
+    # Save to JSON file (Append mode)
+    db_path = os.path.join(os.path.dirname(__file__), LEADS_FILE)
+   
+    entry = asdict(profile)
+    entry["timestamp"] = datetime.now().isoformat()
+   
+    # Read existing, append, write back (Simple JSON DB)
+    existing_data = []
+    if os.path.exists(db_path):
+        try:
+            with open(db_path, "r") as f:
+                existing_data = json.load(f)
+        except: pass
+   
+    existing_data.append(entry)
+   
+    with open(db_path, "w") as f:
+        json.dump(existing_data, f, indent=4)
+       
+    print(f"✅ LEAD SAVED TO {LEADS_FILE}")
+    return f"Lead saved. Summarize the call for the user: 'Thanks {profile.name}, I have your info regarding {profile.use_case}. We will email you at {profile.email}. Goodbye!'"
 
 # ======================================================
-# 🧠 AGENT DEFINITION
+# 🧠 4. AGENT DEFINITION
 # ======================================================
 
-class WellnessAgent(Agent):
-    def __init__(self, history_context: str):
+class SDRAgent(Agent):
+    def __init__(self):
         super().__init__(
             instructions=f"""
-            You are a compassionate, supportive Daily Wellness Companion.
-            
-            🧠 **CONTEXT FROM PREVIOUS SESSIONS:**
-            {history_context}
-            
-            🎯 **GOALS FOR THIS SESSION:**
-            1. **Check-in:** Ask how they are feeling (Mood) and their energy levels.
-               - *Reference the history context if available (e.g., "Last time you were tired, how is today?").*
-            2. **Intentions:** Ask for 1-3 simple objectives for the day.
-            3. **Support:** Offer small, grounded, NON-MEDICAL advice.
-               - Example: "Try a 5-minute walk" or "Break that big task into small steps."
-            4. **Recap & Save:** Summarize their mood and goals, then call 'complete_checkin'.
-
-            🚫 **SAFETY GUARDRAILS:**
-            - You are NOT a doctor or therapist.
-            - Do NOT diagnose conditions or prescribe treatments.
-            - If a user mentions self-harm or severe crisis, gently suggest professional help immediately.
-
-            🛠️ **Use the tools to record data as the user speaks.**
+            You are 'Sarah', a friendly and professional Sales Development Rep (SDR) for 'Dr. Abhishek Store'.
+           
+            📘 **YOUR KNOWLEDGE BASE (FAQ):**
+            {STORE_FAQ_TEXT}
+           
+            🎯 **YOUR GOAL:**
+            1. Answer questions about our Cloud/AI courses and consulting using the FAQ.
+            2. **QUALIFY THE LEAD:** Naturally ask for the following details during the chat:
+               - Name
+               - Company / Role
+               - Email
+               - What are they trying to build? (Use Case)
+               - Timeline (When do they need it?)
+           
+            ⚙️ **BEHAVIOR:**
+            - **Be Conversational:** Don't interrogate the user. Answer a question, THEN ask for a detail.
+            - *Example:* "Our Voice AI course is $499. It's great for teams. By the way, how large is your dev team?"
+            - **Capture Data:** Use `update_lead_profile` immediately when you hear new info.
+            - **Closing:** When the user is done, use `submit_lead_and_end`.
+           
+            🚫 **RESTRICTIONS:**
+            - If you don't know an answer, say "I'll check with Dr. Abhishek and email you." (Don't hallucinate prices).
             """,
-            tools=[
-                record_mood_and_energy,
-                record_objectives,
-                complete_checkin,
-            ],
+            tools=[update_lead_profile, submit_lead_and_end],
         )
 
 # ======================================================
-# 🎬 ENTRYPOINT & INITIALIZATION
+# 🎬 ENTRYPOINT
 # ======================================================
 
 def prewarm(proc: JobProcess):
@@ -218,48 +211,29 @@ def prewarm(proc: JobProcess):
 async def entrypoint(ctx: JobContext):
     ctx.log_context_fields = {"room": ctx.room.name}
 
-    print("\n" + "🌿" * 25)
-    print("🚀 STARTING WELLNESS SESSION")
-    print("👨‍⚕️ Tutorial by Dr. Abhishek")
-    
-    # 1. Load History from JSON
-    history = load_history()
-    history_summary = "No previous history found. This is the first session."
-    
-    if history:
-        last_entry = history[-1]
-        history_summary = (
-            f"Last check-in was on {last_entry.get('timestamp', 'unknown date')}. "
-            f"User felt {last_entry.get('mood')} with {last_entry.get('energy')} energy. "
-            f"Their goals were: {', '.join(last_entry.get('objectives', []))}."
-        )
-        print("📜 HISTORY LOADED:", history_summary)
-    else:
-        print("📜 NO HISTORY FOUND.")
+    print("\n" + "💼" * 25)
+    print("🚀 STARTING SDR SESSION")
+   
+    # 1. Initialize State
+    userdata = Userdata(lead_profile=LeadProfile())
 
-    # 2. Initialize Session Data
-    userdata = Userdata(
-        current_checkin=CheckInState(),
-        history_summary=history_summary
-    )
-
-    # 3. Setup Agent
+    # 2. Setup Agent
     session = AgentSession(
         stt=deepgram.STT(model="nova-3"),
         llm=google.LLM(model="gemini-2.5-flash"),
         tts=murf.TTS(
-            voice="en-US-natalie", # Using a softer, more caring voice
-            style="Promo",         # Often sounds more enthusiastic/supportive
+            voice="en-US-natalie", # Professional, warm female voice
+            style="Promo",        
             text_pacing=True,
         ),
         turn_detection=MultilingualModel(),
         vad=ctx.proc.userdata["vad"],
         userdata=userdata,
     )
-    
-    # 4. Start
+   
+    # 3. Start
     await session.start(
-        agent=WellnessAgent(history_context=history_summary),
+        agent=SDRAgent(),
         room=ctx.room,
         room_input_options=RoomInputOptions(
             noise_cancellation=noise_cancellation.BVC()
